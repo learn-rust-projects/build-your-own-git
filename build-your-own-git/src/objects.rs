@@ -142,6 +142,7 @@ pub(crate) struct Object<R> {
 }
 
 pub(crate) async fn hash_to_reader(path: &str) -> anyhow::Result<Object<impl BufRead>> {
+    // TODO 
     // 使用string构造路径
     let f = std::fs::File::open(format!(".git/objects/{}/{}", &path[0..2], &path[2..]))
         .context("open in .git/objects")?;
@@ -180,44 +181,84 @@ pub(crate) async fn hash_to_reader(path: &str) -> anyhow::Result<Object<impl Buf
         reader: buf,
     })
 }
+
+/// 包装器，根据 compress 决定是否压缩
+enum MaybeCompress<W: Write> {
+    Compressed(ZlibEncoder<W>),
+    Plain(W),
+}
+
+impl<W: Write> Write for MaybeCompress<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            MaybeCompress::Compressed(z) => z.write(buf),
+            MaybeCompress::Plain(w) => w.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            MaybeCompress::Compressed(z) => z.flush(),
+            MaybeCompress::Plain(w) => w.flush(),
+        }
+    }
+}
+
+impl<W: Write> MaybeCompress<W> {
+    fn finish(&mut self) -> std::io::Result<()> {
+        match self {
+            MaybeCompress::Compressed(z) => z.try_finish(), // 完成压缩
+            MaybeCompress::Plain(_) => Ok(()),
+        }
+    }
+}
+
 impl<R> Object<R>
 where
     R: Read,
 {
-    /// 计算hash，传入空write实现不压缩但是计算hash
+    /// 计算hash和压缩：计算hash一定执行，根据 compress 决定是否压缩
     pub(crate) async fn compute_hash(
         &mut self,
         writer: impl Write,
+        compress: bool,
     ) -> Result<[u8; 20], anyhow::Error> {
-        let writer = ZlibEncoder::new(writer, Compression::default());
-        // 1、使用HashWriter 包装writer，HashWriter 会计算写入的内容的hash
+        // 1、根据compress是否要压缩，包装writer
+        let writer = if compress {
+            MaybeCompress::Compressed(ZlibEncoder::new(writer, Compression::default()))
+        } else {
+            MaybeCompress::Plain(writer)
+        };
+
+        // 2、使用HashWriter 包装writer，HashWriter 会计算写入的内容的hash
         let mut writer = HashWriter {
             writer,
             hasher: Sha1::new(),
         };
         write!(writer, "{} {}\0", self.kind, self.expected_size)?;
-        // 2、将reader 中的内容写入writer
+        // 3、将reader 中的内容写入writer
         std::io::copy(&mut self.reader, &mut writer).context("stream file into blob")?;
-        // 3. 计算hash和压缩，hash是和压缩一起进行的
-        // 空的话也会压缩，但是不出错
+
+        // 4. 计算hash和压缩，hash是和压缩一起进行的
         let _ = writer.writer.finish()?;
         let sha1 = writer.hasher.finalize();
         Ok(sha1.into())
     }
 
+    /// 将压缩后的对象写入 .git/objects 目录
     pub(crate) async fn write_object(&mut self) -> Result<[u8; 20], anyhow::Error> {
-        // 使用tempfile crate创建临时文件
+        // 1、使用tempfile crate创建临时文件
         let tmp_path = NamedTempFile::new()?.into_temp_path();
         let file: std::fs::File = std::fs::File::create(&tmp_path)?;
 
-        // 1、计算hash 压缩写入临时文件
+        // 2、计算hash 压缩写入临时文件
         let hex_sha1 = self
-            .compute_hash(file)
+            .compute_hash(file, true)
             .await
             .context("compute hash failed")?;
         let hex = hex::encode(hex_sha1);
 
-        // 2、重命名文件，将临时文件重命名为最终的文件
+        // 3、重命名文件，将临时文件重命名为最终的文件
         fs::create_dir_all(format!(".git/objects/{}/", &hex[..2])).await?;
         std::fs::rename(
             tmp_path,
@@ -228,7 +269,7 @@ where
         Ok(hex_sha1)
     }
 }
-
+/// 将文件转换为 Object 类型
 pub(crate) fn file_to_object(file: impl AsRef<Path>) -> anyhow::Result<Object<impl Read>> {
     let file = file.as_ref();
     let stat = std::fs::metadata(file).with_context(|| format!("stat {}", file.display()))?;

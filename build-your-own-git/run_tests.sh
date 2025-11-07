@@ -152,7 +152,8 @@ main() {
     # 定义测试列表 - 使用竖线作为分隔符
     TESTS=("Git 初始化|../.test/test_init.sh"
            "文件内容读取|../.test/test_cat_file.sh"
-            "读取树对象|../.test/test_ls_tree.sh"
+           "写入树对象|../.test/test_write_tree.sh"
+           "读取树对象|../.test/test_read_tree.sh"
            )
     TOTAL_TESTS=${#TESTS[@]}
     

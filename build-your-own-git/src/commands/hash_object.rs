@@ -25,7 +25,7 @@ pub(crate) async fn hash_and_compress_file(
             .await
             .context("stream file into blob object failed")?,
         false => object
-            .compute_hash(std::io::sink())
+            .compute_hash(std::io::sink(), false)
             .await
             .context("stream file into blob object failed")?,
     };

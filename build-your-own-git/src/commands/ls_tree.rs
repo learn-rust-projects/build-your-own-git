@@ -1,7 +1,7 @@
 use std::{
     any, env,
     ffi::CStr,
-    io::{BufRead, Read, Write},
+    io::{BufRead, BufWriter, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -41,18 +41,17 @@ pub(crate) async fn invoke(path: &str, name_only: bool) -> Result<(), anyhow::Er
                     .split_once(' ')
                     .context("split always yields once")?;
 
-                hash_object.reader.read_exact(&mut hashbuf)?;
+                hash_object.reader.read_exact(&mut hashbuf).context("read entry hash fail")?;
                 if name_only {
                     writeln!(&mut stdout, "{name}")?;
                 } else {
                     let kind: Kind = Mode::from_str(mode)?.into();
-                    write!(
+                    writeln!(
                         &mut stdout,
                         "{mode:0>6} {} {}  {name}",
                         kind,
                         hex::encode(hashbuf),
                     )?;
-                    stdout.write_all(b"\n")?;
                 }
                 buf.clear();
             }
