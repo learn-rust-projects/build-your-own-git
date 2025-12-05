@@ -41,7 +41,10 @@ pub(crate) async fn invoke(path: &str, name_only: bool) -> Result<(), anyhow::Er
                     .split_once(' ')
                     .context("split always yields once")?;
 
-                hash_object.reader.read_exact(&mut hashbuf).context("read entry hash fail")?;
+                hash_object
+                    .reader
+                    .read_exact(&mut hashbuf)
+                    .context("read entry hash fail")?;
                 if name_only {
                     writeln!(&mut stdout, "{name}")?;
                 } else {

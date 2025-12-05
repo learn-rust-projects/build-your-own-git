@@ -142,7 +142,7 @@ pub(crate) struct Object<R> {
 }
 
 pub(crate) async fn hash_to_reader(path: &str) -> anyhow::Result<Object<impl BufRead>> {
-    // TODO 
+    // TODO
     // 使用string构造路径
     let f = std::fs::File::open(format!(".git/objects/{}/{}", &path[0..2], &path[2..]))
         .context("open in .git/objects")?;

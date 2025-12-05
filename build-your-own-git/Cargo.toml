@@ -2,17 +2,18 @@
 name = "own-git"
 version = "0.1.0"
 authors = ["Codecrafters <hello@codecrafters.io>"]
-edition = "2021"
-rust-version = "1.80"
+edition = "2024"
 
 [dependencies]
-anyhow = "1.0.68"                                # error handling
-bytes = "1.3.0"                                  # helps manage buffers
-clap = { version = "4.5.47", features = ["derive"] }
-flate2 = "1.0.34"                                # compression
-thiserror = "1.0.38"                             # error handling
+anyhow = "1.0.100"                                # error handling
+bytes = "1.11.0"                                  # helps manage buffers
+clap = { version = "4.5.53", features = ["derive"] }
+flate2 = "1.1.7"                                # compression
+thiserror = "2.0.17"                             # error handling
 sha1 = "0.10"
 hex = "0.4" 
-tokio = { version = "1.32.0", features = ["full"] }
+tokio = { version = "1.48.0", features = ["full"] }
 futures = "0.3"  # 最新稳定版本
-tempfile = "3.22.0"
+tempfile = "3.23.0"
+reqwest = { version = "0.12.24", features = ["json", "blocking"] }
+regex = "1.10"  # 添加regex依赖
