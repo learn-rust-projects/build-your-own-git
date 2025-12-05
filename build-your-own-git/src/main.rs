@@ -92,6 +92,10 @@ enum Commands {
         #[clap(short = 'm')]
         message: String,
     },
+    Clonne {
+        /// 仓库 URL
+        repo_url: String,
+    },
 }
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
@@ -151,6 +155,9 @@ async fn main() -> Result<(), anyhow::Error> {
         }
         Some(Commands::Commit { message }) => {
             commands::commit::invoke_commit(message).await?;
+        }
+        Some(Commands::Clonne { repo_url }) => {
+                commands::clone::invoke(repo_url);
         }
         // 这行不会执行，因为默认子命令是必须的，除非使用Some(包装)
         _ => println!("No subcommand provided"),
