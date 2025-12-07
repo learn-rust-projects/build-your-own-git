@@ -8,12 +8,14 @@ edition = "2024"
 anyhow = "1.0.100"                                # error handling
 bytes = "1.11.0"                                  # helps manage buffers
 clap = { version = "4.5.53", features = ["derive"] }
-flate2 = "1.1.7"                                # compression
+flate2 = "1.1.4"                                # compression
 thiserror = "2.0.17"                             # error handling
 sha1 = "0.10"
 hex = "0.4" 
 tokio = { version = "1.48.0", features = ["full"] }
 futures = "0.3"  # 最新稳定版本
 tempfile = "3.23.0"
-reqwest = { version = "0.12.24", features = ["json", "blocking"] }
+reqwest = { version = "0.12.24", features = ["json", "blocking", "stream"] }
 regex = "1.10"  # 添加regex依赖
+byteorder = "1.5.0"
+tokio-util = "0.7"  # 添加tokio-util依赖

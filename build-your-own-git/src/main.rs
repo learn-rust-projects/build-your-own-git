@@ -157,7 +157,7 @@ async fn main() -> Result<(), anyhow::Error> {
             commands::commit::invoke_commit(message).await?;
         }
         Some(Commands::Clonne { repo_url }) => {
-            commands::clone::invoke(repo_url);
+            commands::clone::invoke(repo_url).await?;
         }
         // 这行不会执行，因为默认子命令是必须的，除非使用Some(包装)
         _ => println!("No subcommand provided"),
