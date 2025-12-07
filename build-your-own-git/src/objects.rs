@@ -4,7 +4,7 @@ use std::{
     ffi::CStr,
     fmt,
     fs::Metadata,
-    io::{BufRead, Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::Path,
 };
 
@@ -143,6 +143,44 @@ where
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.writer.flush()
+    }
+}
+
+pub struct HashReader<R> {
+    inner: R,
+    hasher: Sha1,
+}
+impl<R: BufRead> HashReader<R> {
+    pub fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: Sha1::new(),
+        }
+    }
+
+    pub fn finalize(self) -> ([u8; 20], R) {
+        (self.hasher.finalize().into(), self.inner)
+    }
+}
+impl<R: Read> Read for HashReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
+}
+impl<R: BufRead> BufRead for HashReader<R>
+where
+    R: BufRead,
+{
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.inner.fill_buf()
+    }
+
+    fn consume(&mut self, amt: usize) {
+        let buf = &self.inner.fill_buf().unwrap()[..amt];
+        self.hasher.update(buf); // ✅ 在 consume 时更新哈希
+        self.inner.consume(amt);
     }
 }
 

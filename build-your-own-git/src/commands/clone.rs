@@ -8,12 +8,13 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use byteorder::{BigEndian, ReadBytesExt};
+use bytes::buf;
 use flate2::{Compression, bufread::ZlibDecoder, write::ZlibEncoder};
 use regex::Regex;
 use reqwest::StatusCode;
 use tokio_util::io::StreamReader;
 
-use crate::objects::{Kind, Object};
+use crate::objects::{HashReader, Kind, Object};
 
 #[repr(u8)]
 #[derive(Debug)]
@@ -90,7 +91,7 @@ pub(crate) async fn invoke(repo_url: String) -> Result<(), anyhow::Error> {
     if nak_vec != b"0008NAK\n" {
         anyhow::bail!("expected NAK, got {:?}", String::from_utf8_lossy(&nak_vec));
     }
-
+    let mut bufreader = HashReader::new(bufreader);
     let mut pack = vec![0; 4];
     bufreader.read_exact(&mut pack).context("read pack fail")?;
     if pack != b"PACK" {
@@ -245,6 +246,20 @@ pub(crate) async fn invoke(repo_url: String) -> Result<(), anyhow::Error> {
         // println!("object1: {}", String::from_utf8_lossy(&object1));
         // break;
     }
+    let (hash, mut bufreader) = bufreader.finalize();
+    eprintln!("final packfile hash: {}", hex::encode(hash));
+
+    let mut expect_hash = Vec::new();
+    bufreader
+        .read_to_end(&mut expect_hash)
+        .context("read final hash fail")?;
+    eprintln!("expected packfile hash: {}", hex::encode(&expect_hash));
+    anyhow::ensure!(
+        hex::encode(hash) == hex::encode(&expect_hash),
+        "packfile hash mismatch: expected {}, got {}",
+        hex::encode(&expect_hash),
+        hex::encode(hash)
+    );
 
     Ok(())
 }
