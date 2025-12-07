@@ -14,7 +14,8 @@ use sha1::{Digest, Sha1};
 use tempfile::NamedTempFile;
 use tokio::fs;
 
-#[derive(Debug, PartialEq, Eq)]
+use crate::commands::clone::ObjectType;
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) enum Kind {
     Blob,
     Tree,
@@ -40,6 +41,17 @@ impl From<Mode> for Kind {
             Mode::Executable => Kind::Blob,
             Mode::Directory => Kind::Tree,
             Mode::SymbolicLink => Kind::Tag,
+        }
+    }
+}
+impl From<ObjectType> for Kind {
+    fn from(obj_type: ObjectType) -> Self {
+        match obj_type {
+            ObjectType::Commit => Kind::Commit,
+            ObjectType::Tree => Kind::Tree,
+            ObjectType::Blob => Kind::Blob,
+            ObjectType::Tag => Kind::Tag,
+            _ => unreachable!(),
         }
     }
 }
