@@ -15,7 +15,10 @@ use flate2::{
     read::ZlibDecoder,
     write::{self, ZlibEncoder},
 };
-use futures::future::{join_all, ok};
+use futures::{
+    future::{join_all, ok},
+    stream::Any,
+};
 use sha1::{Digest, Sha1};
 use tempfile::NamedTempFile;
 use tokio::fs;
@@ -71,7 +74,7 @@ pub(crate) fn write_tree(path: PathBuf) -> TreeFuture {
                 invoke(item.1).await?
             } else {
                 crate::objects::file_to_object(&item.1)?
-                    .write_object()
+                    .write_object(PathBuf::from("."))
                     .await
                     .context("write object failed")?
             };
@@ -95,12 +98,13 @@ pub(crate) fn write_tree(path: PathBuf) -> TreeFuture {
 }
 
 pub(crate) async fn invoke(path: PathBuf) -> Result<[u8; 20], anyhow::Error> {
-    Ok(write_tree(path)
-        .await
-        .context("invoke write tree failed")?
-        .as_mut()
-        .ok_or_else(|| anyhow::anyhow!("invoke write tree failed"))?
-        .write_object()
-        .await
-        .context("invoke write tree failed")?)
+    Ok({
+        write_tree(path)
+            .await
+            .context("invoke write tree failed")?
+            .ok_or_else(|| anyhow::anyhow!("invoke write tree ok_or_else failed"))?
+            .write_object(PathBuf::from("."))
+            .await
+            .context("invoke write tree  write_object failed")?
+    })
 }

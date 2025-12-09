@@ -21,7 +21,7 @@ pub(crate) async fn hash_and_compress_file(
     let mut object = crate::objects::file_to_object(path)?;
     let hash = match write {
         true => object
-            .write_object()
+            .write_object(PathBuf::from("."))
             .await
             .context("stream file into blob object failed")?,
         false => object

@@ -1,11 +1,12 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
+    clone,
     ffi::CStr,
     fmt,
     fs::Metadata,
     io::{BufRead, BufReader, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Error};
@@ -67,6 +68,7 @@ pub(crate) enum Mode {
 impl Mode {
     pub fn from_str(s: &str) -> anyhow::Result<Mode, Error> {
         match s {
+            "40000" => Ok(Mode::Directory),
             "040000" => Ok(Mode::Directory),
             "100644" => Ok(Mode::File),
             "100755" => Ok(Mode::Executable),
@@ -184,7 +186,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Object<R> {
     pub(crate) kind: Kind,
     pub(crate) expected_size: u64,
@@ -296,7 +298,7 @@ where
     }
 
     /// 将压缩后的对象写入 .git/objects 目录
-    pub(crate) async fn write_object(&mut self) -> Result<[u8; 20], anyhow::Error> {
+    pub(crate) async fn write_object(&mut self, path: PathBuf) -> Result<[u8; 20], anyhow::Error> {
         // 1、使用tempfile crate创建临时文件
         let tmp_path = NamedTempFile::new()?.into_temp_path();
         let file: std::fs::File = std::fs::File::create(&tmp_path)?;
@@ -309,10 +311,10 @@ where
         let hex = hex::encode(hex_sha1);
 
         // 3、重命名文件，将临时文件重命名为最终的文件
-        fs::create_dir_all(format!(".git/objects/{}/", &hex[..2])).await?;
+        fs::create_dir_all(path.join(format!(".git/objects/{}/", &hex[..2]))).await?;
         std::fs::rename(
             tmp_path,
-            format!(".git/objects/{}/{}", &hex[..2], &hex[2..]),
+            path.join(format!(".git/objects/{}/{}", &hex[..2], &hex[2..])),
         )
         .context("move blob file into .git/objects")?;
 
@@ -331,4 +333,48 @@ pub(crate) fn file_to_object(file: impl AsRef<Path>) -> anyhow::Result<Object<im
         expected_size: stat.len(),
         reader: file,
     })
+}
+
+pub(crate) async fn git_init(dir: PathBuf) -> anyhow::Result<()> {
+    const GIT_DIR: &str = ".git";
+
+    // 创建目录列表
+    let dirs = ["objects", "refs"];
+    fs::create_dir(dir.join(GIT_DIR))
+        .await
+        .context("create git dir fail")?;
+    for d in dirs {
+        fs::create_dir(dir.join(GIT_DIR).join(d))
+            .await
+            .with_context(|| format!("create git {d} dir fail"))?;
+    }
+
+    // 创建 HEAD 文件
+    fs::write(dir.join(GIT_DIR).join("HEAD"), "ref: refs/heads/main\n")
+        .await
+        .context("create git HEAD fail")?;
+
+    Ok(())
+}
+
+pub async fn write_ref_file(path: PathBuf, data: &[u8]) -> anyhow::Result<()> {
+    // 1. 创建父目录
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+
+    // 2. 写入文件
+    fs::write(path, hex::encode(data)).await?;
+
+    Ok(())
+}
+
+pub(crate) fn find_headref(path: PathBuf) -> anyhow::Result<String> {
+    let head_ref = std::fs::read_to_string(path.join(".git/HEAD"))?;
+    let Some(head_ref) = head_ref.strip_prefix("ref: ") else {
+        anyhow::bail!("refusing to commit onto detached HEAD");
+    };
+    // 去除末尾的换行符
+    let head_ref = head_ref.trim_end();
+    Ok(head_ref.to_string())
 }

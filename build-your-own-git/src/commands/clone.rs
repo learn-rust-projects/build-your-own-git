@@ -1,20 +1,25 @@
 use std::{
     any,
+    collections::HashMap,
     f32::consts::E,
+    ffi::CStr,
+    fs,
     io::{BufRead, Cursor, Read, Write},
     os::linux::raw::stat,
+    path::{Path, PathBuf},
     ptr::read,
 };
 
 use anyhow::{Context, Result, bail};
 use byteorder::{BigEndian, ReadBytesExt};
 use bytes::buf;
+use clap::builder::Str;
 use flate2::{Compression, bufread::ZlibDecoder, write::ZlibEncoder};
 use regex::Regex;
 use reqwest::StatusCode;
 use tokio_util::io::StreamReader;
 
-use crate::objects::{HashReader, Kind, Object};
+use crate::objects::{HashReader, Kind, Mode, Object};
 
 #[repr(u8)]
 #[derive(Debug)]
@@ -40,48 +45,40 @@ impl ObjectType {
     }
 }
 
-pub(crate) async fn invoke(repo_url: String) -> Result<(), anyhow::Error> {
+pub(crate) async fn invoke(repo_url: String, directory: PathBuf) -> Result<(), anyhow::Error> {
     let repo_url = repo_url.trim_end_matches(".git").trim_end_matches('/');
     let client = reqwest::Client::new();
-    // let git_url = format!("{}/info/refs?service=git-upload-pack", repo_url);
-    // let mut resp = client.get(&git_url).send().unwrap();
-    // // 1. 客户必须验证状态码是否为 200 OK 或 200 错误。
-    // let vec = validate_status_and_return_body(&mut resp, &git_url)?;
+    let git_url = format!("{}/info/refs?service=git-upload-pack", repo_url);
+    let mut resp = client.get(&git_url).send().await?;
+    // 1. 客户必须验证状态码是否为 200 OK 或 200 错误。
+    let vec = validate_status_and_return_body(resp, &git_url).await?;
 
-    // // 2. 客户端必须验证响应实体的前五个字节是否与正则表达式 ^ [ 0-9a-f ] {4}#
-    // // 匹配。如果此测试失败，客户端不得继续。
-    // validate_response(&vec)?;
+    // 2. 客户端必须验证响应实体的前五个字节是否与正则表达式 ^ [ 0-9a-f ] {4}#
+    // 匹配。如果此测试失败，客户端不得继续。
+    validate_response(&vec)?;
 
-    // // 3. 客户端必须将整个响应解析为一系列 pkt-line 记录。
-    // let pkt_lines = parse_pkt_lines(&vec)?;
-    // let (hash, _) = &pkt_lines[1]
-    //     .split_once(' ')
-    //     .context("split always yields once")?;
-    // eprintln!("first hash: {}", hash);
+    // 3. 客户端必须将整个响应解析为一系列 pkt-line 记录。
+    let pkt_lines = parse_pkt_lines(&vec)?;
+    let (hash, _) = &pkt_lines[1]
+        .split_once(' ')
+        .context("split always yields once")?;
+    eprintln!("first hash: {}", hash);
+    let clone_url = format!("{}/git-upload-pack", repo_url);
 
-    // TODO测试 之后需要删除
-    // let hash = "9671f5a72cac8b4c379b1c35a6af6d10611d620f";
+    let mut req_body = Vec::new();
+    writeln!(req_body, "0032want {}", hash)?;
+    writeln!(req_body, "00000009done")?;
 
-    // let clone_url = format!("{}/git-upload-pack", repo_url);
-
-    // let mut req_body = Vec::new();
-    // writeln!(req_body, "0032want {}", hash)?;
-    // writeln!(req_body, "00000009done")?;
-
-    // let mut resp = client
-    //     .post(&clone_url)
-    //     .header("Content-Type", "application/x-git-upload-pack-request")
-    //     .body(req_body)
-    //     .send()
-    //     .unwrap();
-    // let body = validate_status_and_return_body(&mut resp, &clone_url)?;
+    let commit_hash = hex::decode(hash)?;
+    let mut resp = client
+        .post(&clone_url)
+        .header("Content-Type", "application/x-git-upload-pack-request")
+        .body(req_body)
+        .send()
+        .await?;
+    let mut body = Cursor::new(validate_status_and_return_body(resp, &clone_url).await?);
     // &[u8] 本身实现了 Read：
-    // 写入到一个文件里面
-    // TODO 之后需要删除 写入文件中
-    // let mut file = std::fs::File::create("../packfile_code.bin")?;
-    // std::io::copy(&mut body.as_slice(), &mut file)?;
-    let mut file = std::fs::File::open("../packfile.bin")?;
-    let mut bufreader = std::io::BufReader::new(&mut file);
+    let mut bufreader = std::io::BufReader::new(&mut body);
 
     let mut nak_vec = vec![0; 8];
     bufreader
@@ -109,7 +106,7 @@ pub(crate) async fn invoke(repo_url: String) -> Result<(), anyhow::Error> {
         .read_u32::<BigEndian>()
         .context("read packfile object count fail")?;
     eprintln!("num_objects: {}", num_objects);
-    let mut hashmap = std::collections::HashMap::new();
+    let mut hashmap: HashMap<[u8; 20], Object<Cursor<Vec<u8>>>> = std::collections::HashMap::new();
     for object_index in 0..num_objects {
         let (size, obj_type) = read_size(&mut bufreader, false).context("read object size fail")?;
         eprintln!("object size: {}", size);
@@ -124,13 +121,14 @@ pub(crate) async fn invoke(repo_url: String) -> Result<(), anyhow::Error> {
                         reader: read_one_object(&mut bufreader)?,
                     };
                     let hash = object.compute_hash(std::io::sink(), false).await?;
+                    object.reader.set_position(0);
                     eprintln!(
                         "Object {} is of type {:?} with hash {:?}",
                         object_index,
                         object.kind,
                         hex::encode(hash)
                     );
-                    hashmap.insert(hex::encode(hash), object);
+                    hashmap.insert(hash, object);
                 }
                 ObjectType::RefDelta => {
                     // 读取 base object id
@@ -140,7 +138,7 @@ pub(crate) async fn invoke(repo_url: String) -> Result<(), anyhow::Error> {
                         .context("read base object id fail")?;
                     eprintln!("base_object_id: {:?}", hex::encode(base_object_id));
 
-                    let hex_base_object_id = hex::encode(base_object_id);
+                    let hex_base_object_id = base_object_id;
                     let base_object = hashmap
                         .get(&hex_base_object_id)
                         .context("can not find base object")?;
@@ -229,18 +227,21 @@ pub(crate) async fn invoke(repo_url: String) -> Result<(), anyhow::Error> {
                         reader: Cursor::new(new_tgt),
                     };
                     let hash = object.compute_hash(std::io::sink(), false).await?;
+                    object.reader.set_position(0);
                     eprintln!(
                         "RefDelta Object {} is of type {:?} with hash {:?}",
                         object_index,
                         object.kind,
                         hex::encode(hash)
                     );
-                    hashmap.insert(hex::encode(hash), object);
+                    hashmap.insert(hash, object);
                 }
                 ObjectType::OfsDelta => {
-                    unimplemented!()
+                    eprintln!("OfsDelta")
                 }
             }
+        } else {
+            eprintln!("Unknown Object Type: {:?}", obj_type);
         }
 
         // println!("object1: {}", String::from_utf8_lossy(&object1));
@@ -261,6 +262,85 @@ pub(crate) async fn invoke(repo_url: String) -> Result<(), anyhow::Error> {
         hex::encode(hash)
     );
 
+    let mut head = hashmap
+        .get_mut(commit_hash.as_slice())
+        .context("can not find head object")?;
+    head.reader.set_position(5);
+    let mut hash = [0; 40];
+    head.reader.read_exact(&mut hash)?;
+    let tree_hash = hex::decode(hash)?;
+    head.reader.set_position(0);
+
+    let path = Path::new("./testdir");
+    tree_to_file(path.to_path_buf(), &tree_hash, &hashmap)?;
+    crate::objects::git_init(path.to_path_buf()).await?;
+
+    let head_ref = crate::objects::find_headref(path.to_path_buf())?;
+
+    crate::objects::write_ref_file(path.join(format!(".git/{head_ref}")), &commit_hash)
+        .await
+        .context("write ref file fail")?;
+    // 写入object文件
+    for (hash, mut object) in hashmap {
+        object.write_object(path.to_path_buf()).await?;
+    }
+
+    Ok(())
+}
+
+fn tree_to_file(
+    path: PathBuf,
+    tree_hash: &[u8],
+    hashmap: &HashMap<[u8; 20], Object<Cursor<Vec<u8>>>>,
+) -> anyhow::Result<()> {
+    fs::create_dir_all(&path).context("create dir all fail")?;
+    let mut hash_object = hashmap
+        .get(tree_hash)
+        .context("can not find tree object")?
+        .clone();
+    let mut buf = Vec::new();
+    let mut hashbuf = [0; 20];
+    loop {
+        let n = hash_object
+            .reader
+            .read_until(0, &mut buf)
+            .context("read next tree object entry")?;
+        if n == 0 {
+            break;
+        }
+        eprintln!("{:?}", String::from_utf8_lossy(&buf));
+        let mode_and_name = CStr::from_bytes_with_nul(&buf)
+            .context("invalid tree entry")?
+            .to_str()
+            .context("invalid tree entry")?;
+        // split_once https://github.com/rust-lang/rust/issues/112811
+        // mode 权限设置，非核心，暂时忽略
+        let (mode, name) = mode_and_name
+            .split_once(' ')
+            .context("split always yields once")?;
+
+        hash_object
+            .reader
+            .read_exact(&mut hashbuf)
+            .context("read entry hash fail")?;
+        let kind: Kind = Mode::from_str(mode)?.into();
+        match kind {
+            Kind::Tree => {
+                tree_to_file(path.join(name), &hashbuf, hashmap)?;
+            }
+            Kind::Blob => {
+                eprintln!("blob hash: {}", hex::encode(hashbuf));
+                let blob_path = path.join(name);
+                let content = &hashmap
+                    .get(hashbuf.as_slice())
+                    .context("can not find blob object")?
+                    .reader;
+                fs::write(blob_path, content.get_ref())?; // 自动创建文件并写入
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
     Ok(())
 }
 
@@ -371,8 +451,8 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn test_clone() {
-        let repo_url = "https://github.com/learn-rust-projects/build-your-own-git";
-        let result = invoke(repo_url.to_string()).await;
+        let repo_url = "https://github.com/learn-rust-projects/rust-design-patterns.git";
+        let result = invoke(repo_url.to_string(), PathBuf::from("test-repo")).await;
         if let Err(e) = &result {
             eprintln!("clone error: {:?}", e);
         }

@@ -4,7 +4,6 @@ pub(crate) mod objects;
 use std::{env, path::PathBuf};
 
 use clap::{ArgGroup, Parser, Subcommand};
-use tokio::fs;
 #[derive(Parser)]
 #[command(
     //name ="myapp", --version will show name
@@ -19,7 +18,7 @@ struct Cli {
 }
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// does testing things
+    /// init 初始化仓库
     Init,
     /// hash
     #[command(group(
@@ -88,13 +87,16 @@ enum Commands {
         #[arg(short = 'p', long = "parent")]
         parent: Option<String>,
     },
+    /// Create a commit object
     Commit {
-        #[clap(short = 'm')]
+        #[arg(short = 'm')]
         message: String,
     },
-    Clonne {
+    Clone {
         /// 仓库 URL
         repo_url: String,
+        /// 目录
+        directory: PathBuf,
     },
 }
 #[tokio::main]
@@ -105,14 +107,10 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut args = env::args();
     let _program = args.next(); // 跳过程序名
     let _first_arg = args.next(); // 获取用户输入的第一个参数（可能是子命令）
-
     let cli = Cli::parse();
     match cli.command {
         Some(Commands::Init) => {
-            fs::create_dir(".git").await?;
-            fs::create_dir(".git/objects").await?;
-            fs::create_dir(".git/refs").await?;
-            fs::write(".git/HEAD", "ref: refs/heads/main\n").await?;
+            objects::git_init(PathBuf::from(".")).await?;
             println!("Initialized git directory");
         }
         Some(Commands::HashObject {
@@ -156,8 +154,11 @@ async fn main() -> Result<(), anyhow::Error> {
         Some(Commands::Commit { message }) => {
             commands::commit::invoke_commit(message).await?;
         }
-        Some(Commands::Clonne { repo_url }) => {
-            commands::clone::invoke(repo_url).await?;
+        Some(Commands::Clone {
+            repo_url,
+            directory,
+        }) => {
+            commands::clone::invoke(repo_url, directory).await?;
         }
         // 这行不会执行，因为默认子命令是必须的，除非使用Some(包装)
         _ => println!("No subcommand provided"),

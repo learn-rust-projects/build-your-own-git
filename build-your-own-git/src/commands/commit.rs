@@ -43,18 +43,13 @@ pub(crate) async fn invoke_commit_tree(
         expected_size: buf.len() as u64,
         reader: Cursor::new(buf),
     };
-    let hash = commit.write_object().await?;
+    let hash = commit.write_object(PathBuf::from(".")).await?;
     println!("{}", hex::encode(hash));
     Ok(hash)
 }
 
 pub(crate) async fn invoke_commit(message: String) -> Result<(), anyhow::Error> {
-    let head_ref = std::fs::read_to_string(".git/HEAD").context("read HEAD")?;
-    let Some(head_ref) = head_ref.strip_prefix("ref: ") else {
-        anyhow::bail!("refusing to commit onto detached HEAD");
-    };
-    // 去除末尾的换行符
-    let head_ref = head_ref.trim_end();
+    let head_ref = crate::objects::find_headref(PathBuf::from("."))?;
     let parent = if let Ok(hash) = std::fs::read_to_string(format!(".git/{head_ref}")) {
         Some(hash.trim().to_string())
     } else {
@@ -70,9 +65,12 @@ pub(crate) async fn invoke_commit(message: String) -> Result<(), anyhow::Error> 
     let commit_hash = invoke_commit_tree(hex::encode(tree_hash), message, parent)
         .await
         .context("commit tree")?;
-    let commit_hash = hex::encode(commit_hash);
-    std::fs::write(format!(".git/{head_ref}"), &commit_hash)
-        .with_context(|| format!("update HEAD reference target {head_ref}"))?;
-    println!("HEAD is now at {commit_hash}");
+    crate::objects::write_ref_file(
+        PathBuf::from(".").join(format!(".git/{head_ref}")),
+        &commit_hash,
+    )
+    .await
+    .context("write ref file fail")?;
+    println!("HEAD is now at {}", hex::encode(commit_hash));
     Ok(())
 }
