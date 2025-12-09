@@ -5,14 +5,14 @@ use std::{
     ffi::CStr,
     fs,
     io::{BufRead, Cursor, Read, Write},
-    os::linux::raw::stat,
     path::{Path, PathBuf},
     ptr::read,
+    sync::LazyLock,
 };
 
 use anyhow::{Context, Result, bail};
 use byteorder::{BigEndian, ReadBytesExt};
-use bytes::buf;
+use bytes::{Bytes, buf};
 use clap::builder::Str;
 use flate2::{Compression, bufread::ZlibDecoder, write::ZlibEncoder};
 use regex::Regex;
@@ -20,6 +20,9 @@ use reqwest::StatusCode;
 use tokio_util::io::StreamReader;
 
 use crate::objects::{HashReader, Kind, Mode, Object};
+
+// Regex::new(r"^[0-9a-f]{4}#") 是 运行时函数，会解析正则并构建 DFA
+static RESPONSE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-f]{4}#").unwrap());
 
 #[repr(u8)]
 #[derive(Debug)]
@@ -45,24 +48,43 @@ impl ObjectType {
     }
 }
 
-pub(crate) async fn invoke(repo_url: String, directory: PathBuf) -> Result<(), anyhow::Error> {
+pub(crate) async fn invoke(repo_url: String, path: PathBuf) -> Result<(), anyhow::Error> {
+    // 1. 构造和发送 git-upload-pack 请求
     let repo_url = repo_url.trim_end_matches(".git").trim_end_matches('/');
     let client = reqwest::Client::new();
     let git_url = format!("{}/info/refs?service=git-upload-pack", repo_url);
-    let mut resp = client.get(&git_url).send().await?;
-    // 1. 客户必须验证状态码是否为 200 OK 或 200 错误。
-    let vec = validate_status_and_return_body(resp, &git_url).await?;
+    let resp = client.get(&git_url).send().await?;
+    // 1.1 客户必须验证状态码是否为 200 OK 或 200 错误。
+    let bytes = validate_status_and_return_body(resp, &git_url).await?;
 
     // 2. 客户端必须验证响应实体的前五个字节是否与正则表达式 ^ [ 0-9a-f ] {4}#
     // 匹配。如果此测试失败，客户端不得继续。
-    validate_response(&vec)?;
+    validate_response(&bytes)?;
 
     // 3. 客户端必须将整个响应解析为一系列 pkt-line 记录。
-    let pkt_lines = parse_pkt_lines(&vec)?;
-    let (hash, _) = &pkt_lines[1]
+    let pkt_lines = parse_pkt_lines(&bytes)?;
+    let line = &pkt_lines[1];
+
+    // 4. 解析 symref 和 hash
+    // 4.1 解析前缀：hash + 余下内容
+    let (hash, rest) = line
         .split_once(' ')
-        .context("split always yields once")?;
+        .context("failed to split pkt-line into <hash> <capabilities>")?;
     eprintln!("first hash: {}", hash);
+
+    // 4.2 找 symref并提取分支名
+    let symref_prefix = "symref=HEAD:";
+    let branch = rest
+        .split_once(symref_prefix)
+        .ok_or_else(|| anyhow::anyhow!("missing `symref=HEAD:` capability"))
+        .and_then(|(_, r)| {
+            r.split_whitespace()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("missing branch after `symref=HEAD:`"))
+        })?;
+    eprintln!("branch: {}", branch);
+
+    // 5. 请求packfile
     let clone_url = format!("{}/git-upload-pack", repo_url);
 
     let mut req_body = Vec::new();
@@ -70,16 +92,16 @@ pub(crate) async fn invoke(repo_url: String, directory: PathBuf) -> Result<(), a
     writeln!(req_body, "00000009done")?;
 
     let commit_hash = hex::decode(hash)?;
-    let mut resp = client
+    let resp = client
         .post(&clone_url)
         .header("Content-Type", "application/x-git-upload-pack-request")
         .body(req_body)
         .send()
         .await?;
-    let mut body = Cursor::new(validate_status_and_return_body(resp, &clone_url).await?);
+    let body = Cursor::new(validate_status_and_return_body(resp, &clone_url).await?);
     // &[u8] 本身实现了 Read：
-    let mut bufreader = std::io::BufReader::new(&mut body);
-
+    let mut bufreader = std::io::BufReader::new(body);
+    // 5.1 解析packfile header
     let mut nak_vec = vec![0; 8];
     bufreader
         .read_exact(&mut nak_vec)
@@ -107,10 +129,9 @@ pub(crate) async fn invoke(repo_url: String, directory: PathBuf) -> Result<(), a
         .context("read packfile object count fail")?;
     eprintln!("num_objects: {}", num_objects);
     let mut hashmap: HashMap<[u8; 20], Object<Cursor<Vec<u8>>>> = std::collections::HashMap::new();
+    // 5.2 解析packfile objects
     for object_index in 0..num_objects {
         let (size, obj_type) = read_size(&mut bufreader, false).context("read object size fail")?;
-        eprintln!("object size: {}", size);
-        eprintln!("object_type: {:?}", obj_type);
         if let Some(obj_type) = ObjectType::from_u8(obj_type) {
             match obj_type {
                 ObjectType::Commit | ObjectType::Tree | ObjectType::Blob | ObjectType::Tag => {
@@ -185,7 +206,7 @@ pub(crate) async fn invoke(repo_url: String, directory: PathBuf) -> Result<(), a
                                 let b = delta_data
                                     .read_u8()
                                     .context("read delta copy size byte fail")?;
-                                copy_size |= (b as usize);
+                                copy_size |= b as usize;
                             }
                             if (opcode & 0b0010_0000) != 0 {
                                 let b = delta_data
@@ -247,6 +268,7 @@ pub(crate) async fn invoke(repo_url: String, directory: PathBuf) -> Result<(), a
         // println!("object1: {}", String::from_utf8_lossy(&object1));
         // break;
     }
+    // 5.3 解析packfile footer
     let (hash, mut bufreader) = bufreader.finalize();
     eprintln!("final packfile hash: {}", hex::encode(hash));
 
@@ -262,32 +284,38 @@ pub(crate) async fn invoke(repo_url: String, directory: PathBuf) -> Result<(), a
         hex::encode(hash)
     );
 
-    let mut head = hashmap
-        .get_mut(commit_hash.as_slice())
-        .context("can not find head object")?;
-    head.reader.set_position(5);
-    let mut hash = [0; 40];
-    head.reader.read_exact(&mut hash)?;
-    let tree_hash = hex::decode(hash)?;
-    head.reader.set_position(0);
-
-    let path = Path::new("./testdir");
+    let tree_hash = parse_tree_hash(&commit_hash, &hashmap)?;
     tree_to_file(path.to_path_buf(), &tree_hash, &hashmap)?;
-    crate::objects::git_init(path.to_path_buf()).await?;
-
+    crate::objects::git_init(path.to_path_buf(), branch).await?;
     let head_ref = crate::objects::find_headref(path.to_path_buf())?;
-
+    eprintln!("head ref: {}", head_ref);
     crate::objects::write_ref_file(path.join(format!(".git/{head_ref}")), &commit_hash)
         .await
         .context("write ref file fail")?;
     // 写入object文件
-    for (hash, mut object) in hashmap {
+    for (_, mut object) in hashmap {
         object.write_object(path.to_path_buf()).await?;
     }
 
     Ok(())
 }
 
+fn parse_tree_hash(
+    commit_hash: &[u8],
+    hashmap: &HashMap<[u8; 20], Object<Cursor<Vec<u8>>>>,
+) -> anyhow::Result<[u8; 20]> {
+    let mut head = hashmap
+        .get(commit_hash)
+        .context("can not find head object")?
+        .clone();
+    head.reader.set_position(5);
+    let mut hash = [0; 40];
+    head.reader.read_exact(&mut hash)?;
+    let tree_hash = hex::decode(hash)?;
+    tree_hash
+        .try_into()
+        .map_err(|v: Vec<u8>| anyhow::anyhow!("hash length invalid: {:?}", v))
+}
 fn tree_to_file(
     path: PathBuf,
     tree_hash: &[u8],
@@ -365,40 +393,31 @@ fn read_size<R: BufRead>(reader: &mut R, is_delta: bool) -> anyhow::Result<(usiz
 pub async fn validate_status_and_return_body(
     resp: reqwest::Response,
     url: &str,
-) -> Result<Vec<u8>, anyhow::Error> {
-    let status = resp.status();
+) -> Result<Bytes, anyhow::Error> {
+    let status: StatusCode = resp.status();
     eprintln!("url: {}, status: {}", url, status);
     match status {
-        StatusCode::OK => Ok(resp.bytes().await?.to_vec()),
+        StatusCode::OK => Ok(resp.bytes().await?),
         StatusCode::NOT_FOUND => {
-            eprintln!("repository not found");
             bail!("repository not found");
         }
 
         _ => {
-            eprintln!("clone failed");
             bail!("clone failed");
         }
     }
 }
 
 fn validate_response(body: &[u8]) -> Result<(), anyhow::Error> {
-    // 确保至少有5个字节
-    if body.len() < 5 {
-        anyhow::bail!("Response too short");
-    }
-
     // 读取前五个字节并转为字符串
-    let first_five = &body[..5];
-    let first_five_str = str::from_utf8(first_five)?;
-
-    // 定义正则 ^[0-9a-f]{4}#
-    let re = Regex::new(r"^[0-9a-f]{4}#")?;
-
-    // 匹配
-    if !re.is_match(first_five_str) {
-        anyhow::bail!("Response validation failed");
-    }
+    let first_five_str = str::from_utf8(
+        body.get(..5)
+            .ok_or_else(|| anyhow::anyhow!("Response too short"))?,
+    )?;
+    anyhow::ensure!(
+        RESPONSE_RE.is_match(first_five_str),
+        "Response validation failed"
+    );
     Ok(())
 }
 fn read_one_object<R: BufRead>(reader: &mut R) -> anyhow::Result<Cursor<Vec<u8>>> {
@@ -413,31 +432,49 @@ fn parse_pkt_lines(mut body: &[u8]) -> Result<Vec<String>, anyhow::Error> {
     let mut pkt_lines = Vec::new();
 
     while !body.is_empty() {
-        if body.len() < 4 {
-            anyhow::bail!("Incomplete pkt-line length");
-        }
+        // 1.读取前 4 个字节作为长度
+        let (len_bytes, rest) = body.split_first_chunk::<4>().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Incomplete pkt-line header: expected 4 bytes for length, got {}",
+                body.len()
+            )
+        })?;
 
-        // 读取前 4 个字节作为长度
-        let len_str = str::from_utf8(&body[..4])?;
-        let mut len = usize::from_str_radix(len_str, 16)?;
+        // 2. 解析十六进制长度（Git pkt-line 使用十六进制，不是十进制！）
+        let len_str =
+            str::from_utf8(len_bytes).context("Invalid UTF-8 in pkt-line length header")?;
+
+        let len = usize::from_str_radix(len_str, 16)
+            .with_context(|| format!("Invalid hexadecimal pkt-line length: '{}'", len_str))?;
+
         eprintln!("pkt-line length: {}", len);
-        // 长度为 0 表示 flush
+        // 3. 处理 flush packet (长度为0)
         if len == 0 {
-            body = &body[4..];
+            body = rest;
             continue;
         }
 
-        if len < 4 || body.len() < len {
-            anyhow::bail!("Invalid pkt-line length");
-        }
-
+        // 4. 严格的长度校验
+        anyhow::ensure!(
+            len >= 4,
+            "Invalid pkt-line length: {} (minimum valid length is 4)",
+            len
+        );
+        anyhow::ensure!(
+            body.len() >= len,
+            "Insufficient data for pkt-line: need {} bytes, have {}",
+            len,
+            body.len()
+        );
+        // 5. 解析内容为 UTF-8 字符串
         // 提取 pkt-line 内容（不包含长度字段）
-        let content = &body[4..len];
-        let content_str = str::from_utf8(content)?.to_string();
-        pkt_lines.push(content_str.clone());
+        let content_str = str::from_utf8(
+            body.get(4..len)
+                .ok_or_else(|| anyhow::anyhow!("Invalid pkt-line content"))?,
+        )
+        .context("Invalid UTF-8 in pkt-line content")?;
+        pkt_lines.push(content_str.to_string());
         eprint!("pkt-line content: {}", content_str);
-
-        // 移动到下一个 pkt-line
         body = &body[len..];
     }
 

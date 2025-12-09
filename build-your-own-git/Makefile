@@ -1,6 +1,6 @@
 # 定义变量
 BINARY_NAME = own-git
-TARGET_PATH = target/release/$(BINARY_NAME)
+TARGET_PATH = /tmp/codecrafters-build-git-rust/release/$(BINARY_NAME)
 INSTALL_PATH = /usr/local/bin/$(BINARY_NAME)
 PROJECT_DIR = .
 
@@ -11,7 +11,7 @@ all: build
 # 构建项目
 .PHONY: build
 build:
-	cargo build --release --manifest-path "$(PROJECT_DIR)/Cargo.toml"
+	cargo build --release --target-dir=/tmp/codecrafters-build-git-rust --manifest-path "$(PROJECT_DIR)/Cargo.toml"
 
 # 为所有脚本添加执行权限
 .PHONY: chmod
@@ -43,7 +43,7 @@ test: clean chmod build
 # 清理构建文件
 .PHONY: clean
 clean:
-	rm -rf target
+	rm -rf /tmp/codecrafters-build-git-rust
 	@echo "✅ Clean completed"
 
 # 显示帮助信息

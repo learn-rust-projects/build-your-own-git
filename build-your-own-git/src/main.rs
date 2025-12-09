@@ -110,7 +110,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
     match cli.command {
         Some(Commands::Init) => {
-            objects::git_init(PathBuf::from(".")).await?;
+            objects::git_init(PathBuf::from("."), "").await?;
             println!("Initialized git directory");
         }
         Some(Commands::HashObject {

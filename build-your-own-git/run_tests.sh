@@ -133,7 +133,7 @@ main() {
         PROGRAM="$1"
         info "使用传入的可执行文件路径: $PROGRAM"
     else
-        PROGRAM="own-git"
+        PROGRAM="/tmp/codecrafters-build-git-rust/release/own-git"
         info "使用默认可执行文件名: $PROGRAM"
     fi
     
@@ -148,11 +148,17 @@ main() {
     cd "$TEST_DIR"
     ok "测试目录 '$TEST_DIR' 已创建"
     echo
-    
-    # 定义测试列表 - 使用竖线作为分隔符
-    TESTS=("Git 初始化|../test_init.sh"
-           "文件内容读取|../test_cat_file.sh"
-           "写入树对象|../test_ls_tree.sh"
+
+    info "当前所在目录: $(pwd)"
+    echo
+ # 定义测试列表 - 使用竖线作为分隔符
+    TESTS=("Git 初始化|../.test/test_init.sh"
+           "文件内容读取|../.test/test_cat_file.sh"
+           "写入树对象|../.test/test_ls_tree.sh"
+           "Tree对象创建|../.test/test_write_tree.sh"
+           "提交对象创建|../.test/test_commit_tree.sh"
+           "克隆仓库|../.test/test_clone.sh"
+           "提交对象提交|../.test/test_commit.sh"
            )
     TOTAL_TESTS=${#TESTS[@]}
     

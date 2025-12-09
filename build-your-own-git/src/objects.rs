@@ -1,11 +1,10 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    clone,
     ffi::CStr,
     fmt,
     fs::Metadata,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -83,7 +82,7 @@ impl Mode {
         match self {
             Mode::File => b"100644",
             Mode::Executable => b"100755",
-            Mode::Directory => b"040000",
+            Mode::Directory => b"40000",
             Mode::SymbolicLink => b"120000",
         }
     }
@@ -292,7 +291,7 @@ where
         std::io::copy(&mut self.reader, &mut writer).context("stream file into blob")?;
 
         // 4. 计算hash和压缩，hash是和压缩一起进行的
-        let _ = writer.writer.finish()?;
+        writer.writer.finish()?;
         let sha1 = writer.hasher.finalize();
         Ok(sha1.into())
     }
@@ -335,7 +334,7 @@ pub(crate) fn file_to_object(file: impl AsRef<Path>) -> anyhow::Result<Object<im
     })
 }
 
-pub(crate) async fn git_init(dir: PathBuf) -> anyhow::Result<()> {
+pub(crate) async fn git_init(dir: PathBuf, mut branch: &str) -> anyhow::Result<()> {
     const GIT_DIR: &str = ".git";
 
     // 创建目录列表
@@ -348,9 +347,12 @@ pub(crate) async fn git_init(dir: PathBuf) -> anyhow::Result<()> {
             .await
             .with_context(|| format!("create git {d} dir fail"))?;
     }
+    if branch.is_empty() {
+        branch = "refs/heads/main";
+    }
 
     // 创建 HEAD 文件
-    fs::write(dir.join(GIT_DIR).join("HEAD"), "ref: refs/heads/main\n")
+    fs::write(dir.join(GIT_DIR).join("HEAD"), format!("ref: {branch}\n"))
         .await
         .context("create git HEAD fail")?;
 

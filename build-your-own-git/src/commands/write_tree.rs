@@ -35,7 +35,7 @@ pub(crate) fn write_tree(path: PathBuf) -> TreeFuture {
         while let Some(entry) = dir.next_entry().await.context("read directory failed")? {
             let name = entry.file_name();
             let path = entry.path();
-            let mode = Mode::from_path(&path).await?;
+            let mode: Mode = Mode::from_path(&path).await?;
             vec.push((name, path, mode));
         }
 

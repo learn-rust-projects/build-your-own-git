@@ -44,7 +44,7 @@ pub(crate) async fn invoke_commit_tree(
         reader: Cursor::new(buf),
     };
     let hash = commit.write_object(PathBuf::from(".")).await?;
-    println!("{}", hex::encode(hash));
+    eprintln!("{}", hex::encode(hash));
     Ok(hash)
 }
 
@@ -71,6 +71,7 @@ pub(crate) async fn invoke_commit(message: String) -> Result<(), anyhow::Error> 
     )
     .await
     .context("write ref file fail")?;
-    println!("HEAD is now at {}", hex::encode(commit_hash));
+    println!("{}", hex::encode(commit_hash));
+    eprintln!("HEAD is now at {}", hex::encode(commit_hash));
     Ok(())
 }
