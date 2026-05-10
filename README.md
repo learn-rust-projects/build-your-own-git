@@ -58,18 +58,37 @@ src/
 
 ## 关键技术难点 & 亮点 & 解决方案
 
-### 1. Packfile Delta 解析 (RefDelta / OfsDelta)
+### 1. Object泛型对象
+
+**难点**：对象可以从本地文件、网络 packfile 等多种来源读取，需要支持任意实现了 `Read` 的数据源。
+
+**解决方案**：
+
+`Object<R>` 泛型对象需要支持任意实现了 `Read` 的数据源，同时需要维护对象类型 `Kind` 和预期大小 `u64`。
+
+```rust
+#[derive(Debug, Clone)]
+pub(crate) struct Object<R> {
+    pub(crate) kind: Kind,
+    pub(crate) expected_size: u64,
+    pub(crate) reader: R,
+}
+```
+
+### 2. Packfile Delta 解析 (RefDelta / OfsDelta)
 
 **难点**：Git packfile 使用 delta 压缩节省空间，支持引用 delta 和偏移 delta 两种形式，需解析变长编码的对象大小。
 
 **解决方案**：
 
-- 实现 `read_size()` 函数处理 MSB 变长编码（每字节最高位表示是否继续）
-- `RefDelta` 维护 `HashMap<[u8; 20], Object>` 动态构建对象依赖图
-- 解析 opcode 按位标志提取 copy offset/size 字节
+- 协议解析注重严格校验：使用bytes和精确读取语义化准确处理协议split_first_chunk、get(4..len)、read_exact、read_u8
+- 实现MSB变长编码：实现 `read_size()` 函数处理 MSB 变长编码（每字节最高位表示是否继续）
+- 实现解析RefDelta逻辑：`RefDelta` 维护 `HashMap<[u8; 20], Object>` 动态构建对象依赖图，解析 opcode 按位标志提取 copy offset/size 字节, 找到基本对象，以此为基础构造 RefDelta
 - 流式解析避免一次性加载整个 packfile 到内存
+- 使用 `join_all()` 并行处理多个对象的 delta 解析
+- 高效计算哈希：使用包装器，一边读取一边计算哈希，最后校验哈希是否匹配
 
-### 2. 流式哈希计算 (HashWriter / HashReader)
+### 3. 使用包装器模式设计流式哈希计算和压缩场景 (HashWriter / HashReader)，支持泛型对象
 
 **难点**：Git 对象存储需要**边写边算** SHA-1 哈希，且需区分压缩和非压缩场景。
 
@@ -79,7 +98,7 @@ src/
 - `Object::compute_hash()` 接收泛型 `Write`，同时支持 `ZlibEncoder`（压缩场景）和 `std::io::sink()`（仅计算哈希）
 - 实现 `HashReader<R>` 支持 `Read` + `BufRead` + `finalize()` 返回 (hash, reader)
 
-### 3. 跨平台文件模式检测
+### 4. 条件编译适配跨平台文件模式检测
 
 **难点**：Unix 可执行位与 Windows 扩展名判断逻辑不同。
 
@@ -89,42 +108,12 @@ src/
 - Unix 通过 `metadata.permissions().mode() & 0o111` 判断可执行位
 - Windows 通过扩展名匹配 `exe/bat/cmd`
 
-### 4. Git 智能协议网络交互
+### 5. Tree 对象排序规则
 
-**难点**：需正确构造 `want`/`done` 请求，验证 pkt-line 格式，解析 symref。
-
-**解决方案**：
-
-- 构造符合协议的请求体（十六进制长度前缀）
-- 使用正则 `^[0-9a-f]{4}#` 验证服务端响应前缀
-- `parse_pkt_lines()` 循环解析变长 pkt-line 流
-- 正则提取 `symref=HEAD:refs/heads/<branch>` 获取分支名
-
-### 5. 异步文件 I/O
-
-**难点**：所有文件操作均为异步，与标准库的同步 `Write`/`Read` 需要桥接。
+**难点**：Git 要求 tree 条目按字节序排序（目录优先于同名文件），排序规则比较特殊，文档不够清晰。
 
 **解决方案**：
 
-- Tokio `fs` 模块处理目录遍历和文件写入
-- `write_object()` 使用 `NamedTempFile` 创建临时文件，原子性 `rename` 到最终路径
-- 异步上下文中的哈希计算需 `.await`，保持非阻塞
-
-### 6. Tree 对象排序规则
-
-**难点**：Git 要求 tree 条目按字节序排序（目录优先于同名文件）。
-
-**解决方案**：
-
+- 查看官网源码然后实现
 - 自定义比较器：对文件名字节进行比较，遇到相同前缀时以 `/` 判定目录优先
 - 使用 `Path::as_encoded_bytes()` 获取平台无关的字节表示
-
----
-
-## 设计亮点
-
-1. **泛型抽象**：`Object<R>` 支持任意实现了 `Read` 的数据源，可复用解析本地对象和网络 packfile
-2. **装饰器模式**：`MaybeCompress` 运行时决定是否压缩，`HashWriter`/`HashReader` 透明添加哈希计算
-3. **零拷贝设计**：packfile 解析后直接存入 `HashMap`，避免不必要的内存复制
-4. **原子性写入**：使用 `NamedTempFile` + `rename` 确保写入过程不会产生损坏的对象文件
-5. **async/await 完整链路**：从 HTTP 请求到文件落盘全程异步，充分利用 Tokio 生态
