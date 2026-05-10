@@ -293,10 +293,19 @@ pub(crate) async fn invoke(repo_url: String, path: PathBuf) -> Result<(), anyhow
         .await
         .context("write ref file fail")?;
     // 写入object文件
-    for (_, mut object) in hashmap {
-        object.write_object(path.to_path_buf()).await?;
-    }
 
+    let mut set = tokio::task::JoinSet::new();
+
+    for (_, mut object) in hashmap {
+    let path = path.to_path_buf();
+    set.spawn(async move {
+        object.write_object(path).await
+    });
+
+    while let Some(res) = set.join_next().await {
+        res??;
+    }
+}
     Ok(())
 }
 
@@ -488,7 +497,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn test_clone() {
-        let repo_url = "https://github.com/learn-rust-projects/rust-design-patterns.git";
+        let repo_url = "https://github.com/learn-rust-projects/build-your-own-git.git";
         let result = invoke(repo_url.to_string(), PathBuf::from("test-repo")).await;
         if let Err(e) = &result {
             eprintln!("clone error: {:?}", e);
