@@ -64,7 +64,7 @@ pub(crate) fn write_tree(path: PathBuf) -> TreeFuture {
 
             a_next.cmp(&b_next)
         });
-
+        // TODO: 使用bytesmut优化
         let mut tree_object = Vec::new();
         for item in vec {
             let hash = if Mode::Directory == item.2 {

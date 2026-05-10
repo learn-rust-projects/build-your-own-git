@@ -310,6 +310,9 @@ where
         let hex = hex::encode(hex_sha1);
 
         // 3、重命名文件，将临时文件重命名为最终的文件
+        // TODO: 优化：重复了就直接舍弃这个临时文件，不去替换了
+        // 如果 new 不存在 → 直接移动
+        // 如果 new 存在 → 原子替换 
         fs::create_dir_all(path.join(format!(".git/objects/{}/", &hex[..2]))).await?;
         std::fs::rename(
             tmp_path,
