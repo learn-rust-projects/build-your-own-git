@@ -29,7 +29,7 @@ type TreeFuture =
 
 pub(crate) fn write_tree(path: PathBuf) -> TreeFuture {
     Box::pin(async move {
-        let mut dir = fs::read_dir(path).await.context("open directory failed")?;
+        let mut dir: fs::ReadDir = fs::read_dir(path).await.context("open directory failed")?;
         let mut vec = Vec::new();
 
         while let Some(entry) = dir.next_entry().await.context("read directory failed")? {
