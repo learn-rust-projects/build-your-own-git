@@ -297,15 +297,12 @@ pub(crate) async fn invoke(repo_url: String, path: PathBuf) -> Result<(), anyhow
     let mut set = tokio::task::JoinSet::new();
 
     for (_, mut object) in hashmap {
-    let path = path.to_path_buf();
-    set.spawn(async move {
-        object.write_object(path).await
-    });
-
+        let path = path.to_path_buf();
+        set.spawn(async move { object.write_object(path).await });
+    }
     while let Some(res) = set.join_next().await {
         res??;
     }
-}
     Ok(())
 }
 
